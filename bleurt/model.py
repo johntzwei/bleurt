@@ -85,6 +85,9 @@ flags.DEFINE_integer("hidden_layers_width", 128, "Width of hidden layers.")
 flags.DEFINE_float("dropout_rate", 0,
                    "Probability of dropout over BERT embedding.")
 
+flags.DEFINE_bool("group_mse", True,
+                   "Calculate MSE after averaging group predictions.")
+
 
 def create_model(bert_config, is_training, input_ids, input_mask, segment_ids,
                  labels, use_one_hot_embeddings, n_hidden_layers,
@@ -140,9 +143,17 @@ def create_model(bert_config, is_training, input_ids, input_mask, segment_ids,
   # <float32>[batch_size]
   predictions = tf.squeeze(predictions, 1)
   # <float32>[batch_size]
+
   per_example_loss = tf.pow(predictions - labels, 2)
+
+  if not FLAGS.group_mse:
+      loss = tf.reduce_mean(per_example_loss, axis=-1)
+  else:
+      pred_group_mean = tf.reduce_mean(predictions, axis=-1)
+      true_group_mean = tf.reduce_mean(labels, axis=-1)
+      loss = tf.pow(pred_group_mean - true_group_mean, 2)
+
   # <float32> []
-  loss = tf.reduce_mean(per_example_loss, axis=-1)
 
   return (loss, per_example_loss, predictions)
 
