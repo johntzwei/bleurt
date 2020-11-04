@@ -85,9 +85,11 @@ flags.DEFINE_integer("hidden_layers_width", 128, "Width of hidden layers.")
 flags.DEFINE_float("dropout_rate", 0,
                    "Probability of dropout over BERT embedding.")
 
-flags.DEFINE_bool("group_mse", True,
+flags.DEFINE_bool("group_mse", False,
                    "Calculate MSE after averaging group predictions.")
 
+flags.DEFINE_bool("group_batches", False,
+                   "Create batches within groups")
 
 def create_model(bert_config, is_training, input_ids, input_mask, segment_ids,
                  labels, use_one_hot_embeddings, n_hidden_layers,
@@ -166,6 +168,7 @@ def model_fn_builder(bert_config, init_checkpoint, learning_rate,
 
   def model_fn(features, labels, mode, params):  # pylint: disable=unused-argument
     """The `model_fn` for Estimator/TPUEstimator."""
+    
 
     logging.info("*** Building Regression BERT Model ***")
     tf.set_random_seed(55555)
@@ -336,7 +339,8 @@ def input_fn_builder(tfrecord_file,
       "input_ids": tf.FixedLenFeature([seq_length], tf.int64),
       "input_mask": tf.FixedLenFeature([seq_length], tf.int64),
       "segment_ids": tf.FixedLenFeature([seq_length], tf.int64),
-      "score": tf.FixedLenFeature([], tf.float32)
+      "score": tf.FixedLenFeature([], tf.float32),
+      "group": tf.FixedLenFeature([], tf.int64)
   }
 
   def _decode_record(record, name_to_features):
@@ -344,9 +348,12 @@ def input_fn_builder(tfrecord_file,
     example = tf.parse_single_example(record, name_to_features)
     # tf.Example only supports tf.int64, but the TPU only supports tf.int32.
     # So cast all int64 to int32.
+
+    # I don't have a TPU
+    TPU = False
     for name in list(example.keys()):
       t = example[name]
-      if t.dtype == tf.int64:
+      if TPU and t.dtype == tf.int64:
         t = tf.to_int32(t)
       example[name] = t
     return example
@@ -357,8 +364,17 @@ def input_fn_builder(tfrecord_file,
     if is_training:
       d = d.repeat()
       d = d.shuffle(buffer_size=FLAGS.shuffle_buffer_size)
+
     d = d.map(lambda record: _decode_record(record, name_to_features))
-    d = d.batch(batch_size=batch_size, drop_remainder=drop_remainder)
+
+    if FLAGS.group_batches:
+      logging.info("Group batches activated, each batch will have examples within the group.")
+      d = d.apply(tf.data.experimental.group_by_window(
+        key_func=lambda elem: elem['group'],
+        reduce_func=lambda _, window: window.batch(batch_size),
+        window_size=batch_size))
+    else:
+      d = d.batch(batch_size=batch_size, drop_remainder=drop_remainder)
     return d
 
   return input_fn
