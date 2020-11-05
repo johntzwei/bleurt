@@ -156,7 +156,8 @@ def encode_batch(references, candidates, tokenizer, max_seq_length):
   """
   encoded_examples = []
   for ref, cand in zip(references, candidates):
-    triplet = encode_example(ref, cand, tokenizer, max_seq_length)
+    triplet = encode_example(ref, cand, "", tokenizer, max_seq_length)
+    triplet = triplet[:3]
     example = np.stack(triplet)
     encoded_examples.append(example)
   stacked_examples = np.stack(encoded_examples)

@@ -371,7 +371,7 @@ def input_fn_builder(tfrecord_file,
       logging.info("Group batches activated, each batch will have examples within the group.")
       d = d.apply(tf.data.experimental.group_by_window(
         key_func=lambda elem: elem['group'],
-        reduce_func=lambda _, window: window.batch(batch_size),
+        reduce_func=lambda _, window: window.batch(batch_size=batch_size, drop_remainder=drop_remainder),
         window_size=batch_size))
     else:
       d = d.batch(batch_size=batch_size, drop_remainder=drop_remainder)
