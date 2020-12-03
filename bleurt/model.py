@@ -330,8 +330,6 @@ def metric_fn(per_example_loss, pred, ratings):
   kendalltau = kendall_tau_metric(pred, ratings)
 
   # batched loss - TODO
-  batch_mean_err = tf.reduce_mean(ratings-pred)
-
 
   output = {
       "eval_loss": mean_loss,
@@ -340,7 +338,6 @@ def metric_fn(per_example_loss, pred, ratings):
       "eval_pred_sd": pred_sd,
       "correlation": correlation,
       "kendalltau": kendalltau,
-      "batch_mean_err" : batch_mean_err,
   }
 
   return output
