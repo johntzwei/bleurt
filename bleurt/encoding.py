@@ -22,6 +22,8 @@ import pandas as pd
 import tensorflow.compat.v1 as tf
 import hashlib
 
+import pdb
+
 
 flags = tf.flags
 logging = tf.logging
@@ -40,7 +42,7 @@ def _truncate_seq_pair(tokens_ref, tokens_cand, max_length):
       tokens_cand.pop()
 
 
-def encode_example(reference, candidate, system, tokenizer, max_seq_length):
+def encode_example(reference, candidate, tokenizer, max_seq_length):
   """Tokenization and encoding of an example rating.
 
   Args:
@@ -89,12 +91,13 @@ def encode_example(reference, candidate, system, tokenizer, max_seq_length):
   assert len(input_mask) == max_seq_length
   assert len(segment_ids) == max_seq_length
 
-  return input_ids, input_mask, segment_ids, system
+  return input_ids, input_mask, segment_ids
 
 
 def serialize_example(reference,
                       candidate,
-                      system,
+                      group,
+                      group_mean,
                       tokenizer,
                       max_seq_length,
                       score=None):
@@ -123,7 +126,7 @@ def serialize_example(reference,
     f = tf.train.Feature(int64_list=tf.train.Int64List(value=[hash(value)]))
     return f
 
-  input_ids, input_mask, segment_ids, system_str = encode_example(reference, candidate, system,
+  input_ids, input_mask, segment_ids = encode_example(reference, candidate,
                                                       tokenizer, max_seq_length)
 
   # Creates the TFExample.
@@ -131,7 +134,9 @@ def serialize_example(reference,
   features["input_ids"] = _create_int_feature(input_ids)
   features["input_mask"] = _create_int_feature(input_mask)
   features["segment_ids"] = _create_int_feature(segment_ids)
-  features["group"] = _create_str_feature(system_str)
+
+  features["group"] = _create_str_feature(group)
+  features["group_mean"] = _create_float_feature([group_mean])
 
   if score is not None:
     features["score"] = _create_float_feature([score])
@@ -173,7 +178,7 @@ def encode_and_serialize(input_file, output_file, vocab_file, do_lower_case,
   logging.info("Reading data...")
   with tf.io.gfile.GFile(input_file, "r") as f:
     examples_df = pd.read_json(f, lines=True)
-  for col in ["reference", "candidate", "score", "group"]:
+  for col in ["reference", "candidate", "score", "group", "group_mean"]:
     assert col in examples_df.columns, \
         "field {} not found in input file!".format(col)
   n_records = len(examples_df)
@@ -192,6 +197,7 @@ def encode_and_serialize(input_file, output_file, vocab_file, do_lower_case,
           record.reference,
           record.candidate,
           record.group,
+          record.group_mean,
           tokenizer,
           max_seq_length,
           score=record.score)

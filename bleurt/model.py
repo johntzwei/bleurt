@@ -23,6 +23,8 @@ import tensorflow.compat.v1 as tf
 
 from tf_slim import metrics
 
+import pdb
+
 flags = tf.flags
 logging = tf.logging
 FLAGS = flags.FLAGS
@@ -88,11 +90,14 @@ flags.DEFINE_float("dropout_rate", 0,
 flags.DEFINE_bool("group_mse", False,
                    "Calculate MSE after averaging group predictions.")
 
+flags.DEFINE_float("group_mean_alpha", 0.0,
+                   "labels = alpha * group_mean + (1-alpha) * labels ")
+
 flags.DEFINE_bool("group_batches", False,
                    "Create batches within groups")
 
 def create_model(bert_config, is_training, input_ids, input_mask, segment_ids,
-                 labels, use_one_hot_embeddings, n_hidden_layers,
+                 labels, group_means, use_one_hot_embeddings, n_hidden_layers,
                  hidden_layers_width, dropout_rate):
   """Creates a regression model, loosely adapted from language/bert.
 
@@ -148,6 +153,14 @@ def create_model(bert_config, is_training, input_ids, input_mask, segment_ids,
 
   per_example_loss = tf.pow(predictions - labels, 2)
 
+  if FLAGS.group_mean_alpha == 0.0:
+      labels = labels
+  elif FLAGS.group_mean_alpha == 1.0:
+      labels = group_means
+  else:
+      alpha = FLAGS.group_mean_alpha
+      labels = alpha * group_means + (1-alpha) * labels
+
   if not FLAGS.group_mse:
       loss = tf.reduce_mean(per_example_loss, axis=-1)
   else:
@@ -180,6 +193,7 @@ def model_fn_builder(bert_config, init_checkpoint, learning_rate,
     input_ids = features["input_ids"]
     input_mask = features["input_mask"]
     segment_ids = features["segment_ids"]
+    group_mean = features['group_mean']
 
     if mode != tf.estimator.ModeKeys.PREDICT:
       scores = features["score"]
@@ -189,7 +203,7 @@ def model_fn_builder(bert_config, init_checkpoint, learning_rate,
     is_training = (mode == tf.estimator.ModeKeys.TRAIN)
     total_loss, per_example_loss, pred = create_model(
         bert_config, is_training, input_ids, input_mask, segment_ids, scores,
-        use_one_hot_embeddings, n_hidden_layers, hidden_layers_width,
+        group_mean, use_one_hot_embeddings, n_hidden_layers, hidden_layers_width,
         dropout_rate)
 
     output_spec = None
@@ -314,6 +328,11 @@ def metric_fn(per_example_loss, pred, ratings):
   correlation = metrics.streaming_pearson_correlation(pred, ratings)
   # Kendall Tau
   kendalltau = kendall_tau_metric(pred, ratings)
+
+  # batched loss - TODO
+  batch_mean_err = tf.reduce_mean(ratings-pred)
+
+
   output = {
       "eval_loss": mean_loss,
       "eval_mean_err": mean_err,
@@ -321,6 +340,7 @@ def metric_fn(per_example_loss, pred, ratings):
       "eval_pred_sd": pred_sd,
       "correlation": correlation,
       "kendalltau": kendalltau,
+      "batch_mean_err" : batch_mean_err,
   }
 
   return output
@@ -340,7 +360,8 @@ def input_fn_builder(tfrecord_file,
       "input_mask": tf.FixedLenFeature([seq_length], tf.int64),
       "segment_ids": tf.FixedLenFeature([seq_length], tf.int64),
       "score": tf.FixedLenFeature([], tf.float32),
-      "group": tf.FixedLenFeature([], tf.int64)
+      "group": tf.FixedLenFeature([], tf.int64),
+      "group_mean": tf.FixedLenFeature([], tf.float32),
   }
 
   def _decode_record(record, name_to_features):
