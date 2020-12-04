@@ -160,6 +160,7 @@ def create_model(bert_config, is_training, input_ids, input_mask, segment_ids,
   else:
       alpha = FLAGS.group_mean_alpha
       labels = alpha * group_means + (1-alpha) * labels
+      #labels = tf.Print(labels, [labels], 'labels: ')
 
   if not FLAGS.group_mse:
       loss = tf.reduce_mean(per_example_loss, axis=-1)
@@ -193,6 +194,8 @@ def model_fn_builder(bert_config, init_checkpoint, learning_rate,
     input_ids = features["input_ids"]
     input_mask = features["input_mask"]
     segment_ids = features["segment_ids"]
+
+    group = features['group']
     group_mean = features['group_mean']
 
     if mode != tf.estimator.ModeKeys.PREDICT:
@@ -258,7 +261,7 @@ def model_fn_builder(bert_config, init_checkpoint, learning_rate,
         output_spec = tf.estimator.EstimatorSpec(
             mode=mode,
             loss=total_loss,
-            eval_metric_ops=metric_fn(per_example_loss, pred, scores))
+            eval_metric_ops=metric_fn(per_example_loss, pred, scores, group, group_mean))
 
     elif mode == tf.estimator.ModeKeys.PREDICT:
       output_spec = tf.estimator.EstimatorSpec(
@@ -309,8 +312,36 @@ def kendall_tau_metric(predictions, ratings, weights=None):
 
     return metric_value, update_op
 
+def total_abs_group_bias(predictions, ratings, group):
+  """Builds the computation graph for Kendall Tau metric."""
 
-def metric_fn(per_example_loss, pred, ratings):
+  def abs_group_bias(x, y, group):
+    def to_components(index):
+        return np.split(np.argsort(index), np.cumsum(np.unique(index, return_counts=True)[1]))
+
+    # last array is empty for some reason
+    split_groups = to_components(group)
+    
+    total = 0.
+    for group_idx in split_groups[:-1]:
+        group_x, group_y = x[group_idx], y[group_idx]
+        total += np.abs(np.mean(group_x) - np.mean(group_y))
+
+    return np.array(total).astype(np.float32)
+
+  with tf.variable_scope("total_abs_group_bias"):
+    concat_predictions_value, concat_labels_value, concat_groups_value, update_op = (
+        concat_tensors(predictions, ratings, group))
+    metric_value = tf.reshape(
+        tf.numpy_function(abs_group_bias,
+                          [concat_predictions_value, concat_labels_value, concat_groups_value],
+                          tf.float32),
+        shape=[])
+
+    return metric_value, update_op
+
+
+def metric_fn(per_example_loss, pred, ratings, group, group_mean):
   """Metrics for BLEURT experiments."""
   # Mean of predictions
   mean_pred = tf.metrics.mean(values=pred)
@@ -330,6 +361,7 @@ def metric_fn(per_example_loss, pred, ratings):
   kendalltau = kendall_tau_metric(pred, ratings)
 
   # batched loss - TODO
+  group_bias = total_abs_group_bias(pred, group_mean, group)
 
   output = {
       "eval_loss": mean_loss,
@@ -338,6 +370,7 @@ def metric_fn(per_example_loss, pred, ratings):
       "eval_pred_sd": pred_sd,
       "correlation": correlation,
       "kendalltau": kendalltau,
+      "total_abs_group_bias": group_bias,
   }
 
   return output
@@ -412,13 +445,17 @@ def _serving_input_fn_builder(seq_length):
     name_to_features = {
         "input_ids": tf.zeros(dtype=tf.int64, shape=[0, seq_length]),
         "input_mask": tf.zeros(dtype=tf.int64, shape=[0, seq_length]),
-        "segment_ids": tf.zeros(dtype=tf.int64, shape=[0, seq_length])
+        "segment_ids": tf.zeros(dtype=tf.int64, shape=[0, seq_length]),
+        "group": tf.zeros(dtype=tf.int64, shape=[0,]),
+        "group_mean": tf.zeros(dtype=tf.float32, shape=[0,]),
     }
   else:
     name_to_features = {
         "input_ids": tf.placeholder(tf.int64, shape=[None, seq_length]),
         "input_mask": tf.placeholder(tf.int64, shape=[None, seq_length]),
-        "segment_ids": tf.placeholder(tf.int64, shape=[None, seq_length])
+        "segment_ids": tf.placeholder(tf.int64, shape=[None, seq_length]),
+        "group": tf.placeholder(tf.int64, shape=[None,]),
+        "group_mean": tf.placeholder(tf.float32, shape=[None,]),
     }
   return tf.estimator.export.build_raw_serving_input_receiver_fn(
       name_to_features)
