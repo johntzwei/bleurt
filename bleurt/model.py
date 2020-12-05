@@ -61,7 +61,7 @@ flags.DEFINE_integer(
     "than this will be padded.")
 
 # Flags to control training setup.
-flags.DEFINE_enum("export_metric", "kendalltau", ["correlation", "kendalltau"],
+flags.DEFINE_enum("export_metric", "kendalltau", ["correlation", "kendalltau", 'total_abs_group_bias'],
                   "Metric to chose the best model in export functions.")
 
 flags.DEFINE_integer("shuffle_buffer_size", 500,
@@ -327,6 +327,7 @@ def total_abs_group_bias(predictions, ratings, group):
         group_x, group_y = x[group_idx], y[group_idx]
         total += np.abs(np.mean(group_x) - np.mean(group_y))
 
+    total = -total      # export on best, lower bias is better
     return np.array(total).astype(np.float32)
 
   with tf.variable_scope("total_abs_group_bias"):
