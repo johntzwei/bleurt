@@ -81,13 +81,14 @@ def run_finetuning_pipeline(train_set, dev_set):
   train_eval_fun = experiment_utils.run_experiment
   model.run_finetuning(train_tfrecord, dev_tfrecord, train_eval_fun)
 
+  # don't delete for caching purposes
   # Deletes temp files.
-  if not FLAGS.serialized_train_set:
-    logging.info("Deleting serialized training examples.")
-    tf.io.gfile.remove(train_tfrecord)
-  if not FLAGS.serialized_dev_set:
-    logging.info("Deleting serialized dev examples.")
-    tf.io.gfile.remove(dev_tfrecord)
+  #if not FLAGS.serialized_train_set:
+  #  logging.info("Deleting serialized training examples.")
+  #  tf.io.gfile.remove(train_tfrecord)
+  #if not FLAGS.serialized_dev_set:
+  #  logging.info("Deleting serialized dev examples.")
+  #  tf.io.gfile.remove(dev_tfrecord)
 
   # Gets export location.
   glob_pattern = os.path.join(FLAGS.model_dir, "export", "bleurt_best", "*")

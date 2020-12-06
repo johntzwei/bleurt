@@ -23,6 +23,7 @@ import tensorflow.compat.v1 as tf
 import hashlib
 
 import pdb
+import os
 
 
 flags = tf.flags
@@ -185,6 +186,10 @@ def encode_and_serialize(input_file, output_file, vocab_file, do_lower_case,
   logging.info("Read {} examples.".format(n_records))
 
   logging.info("Encoding and writing TFRecord file...")
+  if os.path.exists(output_file):
+    logging.info('Output file %s already exists, using existing file.' % output_file)
+    return
+
   tokenizer = tokenization.FullTokenizer(
       vocab_file=vocab_file, do_lower_case=do_lower_case)
   with tf.python_io.TFRecordWriter(output_file) as writer:
