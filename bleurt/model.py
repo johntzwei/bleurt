@@ -20,10 +20,12 @@ from bleurt.lib import optimization
 import numpy as np
 from scipy import stats
 import tensorflow.compat.v1 as tf
-
 from tf_slim import metrics
-
 import pdb
+import pandas as pd
+import itertools
+import os
+import hashlib
 
 flags = tf.flags
 logging = tf.logging
@@ -61,7 +63,7 @@ flags.DEFINE_integer(
     "than this will be padded.")
 
 # Flags to control training setup.
-flags.DEFINE_enum("export_metric", "kendalltau", ["correlation", "kendalltau", 'total_abs_group_bias'],
+flags.DEFINE_enum("export_metric", "group_pairwise_accuracy", ["correlation", "kendalltau", 'total_abs_group_bias', "group_pairwise_accuracy"],
                   "Metric to chose the best model in export functions.")
 
 flags.DEFINE_integer("shuffle_buffer_size", 500,
@@ -87,6 +89,7 @@ flags.DEFINE_integer("hidden_layers_width", 128, "Width of hidden layers.")
 flags.DEFINE_float("dropout_rate", 0,
                    "Probability of dropout over BERT embedding.")
 
+# "Group Loss" training: turn this and "group_batches" on...
 flags.DEFINE_bool("group_mse", False,
                    "Calculate MSE after averaging group predictions.")
 
@@ -95,6 +98,25 @@ flags.DEFINE_float("group_mean_alpha", 0.0,
 
 flags.DEFINE_bool("group_batches", False,
                    "Create batches within groups")
+
+# create reverse dictionary - define global var, and find year & lp from hash
+group_hash_dict = {}
+
+# adding custom hash function - we need deterministic hashing.
+# def hash_md5_16(value):
+#   b = bytes(value, 'utf-8')
+#   w = hashlib.md5(b).hexdigest()[:16]
+#   return int(w, 16)
+def hash_md5_16(value):
+  b = bytes(value, 'utf-8')
+  w = hashlib.md5(b).hexdigest()[:16]
+  val = int(w, 16)
+  #convert to signed integer (to avoid overflow problems)
+  bits = 64
+  if val & (1 << (bits-1)):
+    val -= 1 << bits
+  return val
+
 
 def create_model(bert_config, is_training, input_ids, input_mask, segment_ids,
                  labels, group_means, use_one_hot_embeddings, n_hidden_layers,
@@ -182,8 +204,6 @@ def model_fn_builder(bert_config, init_checkpoint, learning_rate,
 
   def model_fn(features, labels, mode, params):  # pylint: disable=unused-argument
     """The `model_fn` for Estimator/TPUEstimator."""
-    
-
     logging.info("*** Building Regression BERT Model ***")
     tf.set_random_seed(55555)
 
@@ -321,7 +341,7 @@ def total_abs_group_bias(predictions, ratings, group):
 
     # last array is empty for some reason
     split_groups = to_components(group)
-    
+
     total = 0.
     for group_idx in split_groups[:-1]:
         group_x, group_y = x[group_idx], y[group_idx]
@@ -335,6 +355,104 @@ def total_abs_group_bias(predictions, ratings, group):
         concat_tensors(predictions, ratings, group))
     metric_value = tf.reshape(
         tf.numpy_function(abs_group_bias,
+                          [concat_predictions_value, concat_labels_value, concat_groups_value],
+                          tf.float32),
+        shape=[])
+
+    return metric_value, update_op
+
+
+# def group_prmse(predictions, ratings, group):
+#   """Builds the computation graph for Kendall Tau metric."""
+
+#   def prmse(predictions, ratings, group):
+#     def to_components(index):
+#         return np.split(np.argsort(index), np.cumsum(np.unique(index, return_counts=True)[1]))
+
+#     # last array is empty for some reason
+#     split_groups = to_components(group)
+
+#     total = 0.
+#     for group_idx in split_groups[:-1]:
+#       group_x, group_y = predictions[group_idx], ratings[group_idx]
+#       se = (np.mean(group_x) - np.mean(group_y))**2
+#       adjusted_se = se * len(group_x) - len(predictions)*np.var(ratings)
+#       total += adjusted_se
+
+#     total /= (len(split_groups)-1)
+#     return np.array(total).astype(np.float32)
+
+#   with tf.variable_scope("group_prmse"):
+#     concat_predictions_value, concat_labels_value, concat_groups_value, update_op = (
+#         concat_tensors(predictions, ratings, group))
+#     metric_value = tf.reshape(
+#         tf.numpy_function(prmse,
+#                           [concat_predictions_value, concat_labels_value, concat_groups_value],
+#                           tf.float32),
+#         shape=[])
+
+#     return metric_value, update_op
+
+
+# assume that "group" is the proper group.
+def group_pairwise_accuracy(predictions, ratings, group):
+  """Builds the computation graph for Kendall Tau metric."""
+
+  # this sorts the results by group, and then splits them by model/year/lp.
+  # what are the "predictions" and "ratings" objects???
+  def pairwise_accuracy(predictions, ratings, group):
+    def to_components(index):
+      return np.split(np.argsort(index), np.cumsum(np.unique(index, return_counts=True)[1]))
+
+    split_groups = to_components(group)  # returns an array of arrays of indices (indices --> ratings array)
+
+    grouped_scores = pd.DataFrame(columns=['bleurt_score', 'score', 'year_lp', 'group_name'])
+    for group_idx in split_groups[:-1]:
+      # last array is empty
+      group_x, group_y = predictions[group_idx], ratings[group_idx]
+
+      # save the group name + year/lp
+      group_hash = group[group_idx[0]]
+      year_lp = group_hash_dict[group_hash]
+
+      # store the following [mean_bleurt_pred, mean_rating, year_lp, group]
+      group_info = pd.DataFrame({'bleurt_score':[np.mean(group_x)], 'score':[np.mean(group_y)], 
+        'year_lp':[year_lp], 'group_name':[group_hash]})
+      grouped_scores = grouped_scores.append(group_info)
+
+      #debug the above series creation
+      # logging.info("attempting to add row to 'grouped_scores'...\n")
+      # logging.info(f"mean prediction: {np.mean(group_x)}, year/lp: {year_lp}")
+      # logging.info(str(group_info))
+
+    #debug
+    logging.info("Identified year, lp for all data points...\n")
+    logging.info(str(grouped_scores.head()))
+
+    # next, perform the pairwise score computation.
+    total_pairs = 0
+    bleurt_accuracy = 0.
+
+    for i, g in grouped_scores.groupby('year_lp'):
+      for (_, row), (_, row_) in itertools.combinations(g.iterrows(), r=2):
+        total_pairs += 1
+        if np.sign(row['bleurt_score'] - row_['bleurt_score']) == np.sign(row['score'] - row_['score']):
+          bleurt_accuracy += 1
+
+    accuracy = bleurt_accuracy / total_pairs
+    #debug
+    logging.info(
+      "Pairwise accuracy computed. Total language pairs evaluated: {}, total correctly assessed: {}".format(
+          str(total_pairs), str(bleurt_accuracy)))
+    
+    return np.array(accuracy).astype(np.float32)
+
+  # what is this???
+  with tf.variable_scope("group_pairwise_accuracy"):
+    concat_predictions_value, concat_labels_value, concat_groups_value, update_op = (
+        concat_tensors(predictions, ratings, group))
+    metric_value = tf.reshape(
+        tf.numpy_function(pairwise_accuracy,
                           [concat_predictions_value, concat_labels_value, concat_groups_value],
                           tf.float32),
         shape=[])
@@ -364,6 +482,12 @@ def metric_fn(per_example_loss, pred, ratings, group, group_mean):
   # batched loss - TODO
   group_bias = total_abs_group_bias(pred, group_mean, group)
 
+  # group prmse
+  #group_prmse_value = group_prmse(pred, group_mean, group)
+
+  # pairwise group loss
+  group_pairwise_acc = group_pairwise_accuracy(pred, group_mean, group)
+
   output = {
       "eval_loss": mean_loss,
       "eval_mean_err": mean_err,
@@ -372,6 +496,8 @@ def metric_fn(per_example_loss, pred, ratings, group, group_mean):
       "correlation": correlation,
       "kendalltau": kendalltau,
       "total_abs_group_bias": group_bias,
+      #"group_prmse": group_prmse_value,
+      "group_pairwise_accuracy": group_pairwise_acc
   }
 
   return output
@@ -462,7 +588,10 @@ def _serving_input_fn_builder(seq_length):
       name_to_features)
 
 
-def run_finetuning(train_tfrecord,
+def run_finetuning(train_set,
+                   dev_set,
+                   scratch_dir,
+                   train_tfrecord,
                    dev_tfrecord,
                    train_eval_fun=None,
                    use_tpu=False,
@@ -478,6 +607,25 @@ def run_finetuning(train_tfrecord,
 
   logging.info("Creating input data pipeline.")
   logging.info("Train/Eval batch size: {}".format(str(FLAGS.batch_size)))
+
+  # set up the training "reverse-dictionary" to capture year-lp
+  logging.info("Starting to populate reverse group dictionary.")
+  train_df = pd.read_json(train_set, lines=True)
+  dev_df = pd.read_json(dev_set, lines=True)
+  examples_df = pd.concat([train_df, dev_df])
+  #group_hash_dict = {}
+  for g in examples_df['group'].unique():
+    h = hash_md5_16(g)
+    year_lp = '|'.join(g.split('|')[1:])
+    group_hash_dict[h] = year_lp
+  
+    # debugging
+    logging.info(f"Example - {g}:{h}:{group_hash_dict[h]}\n")
+  logging.info("Group hash dict populated!")
+
+  #   == also, save the dictionary to a file for debugging purposes
+  # with open(os.path.join(scratch_dir, 'group_hash_dict'), 'w') as f:
+  #   f.write(str(group_hash_dict)+'\n') 
 
   train_input_fn = input_fn_builder(
       train_tfrecord,

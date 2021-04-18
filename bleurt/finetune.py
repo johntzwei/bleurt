@@ -79,7 +79,8 @@ def run_finetuning_pipeline(train_set, dev_set):
   # Actual fine-tuning work.
   logging.info("*** Running fine-tuning.")
   train_eval_fun = experiment_utils.run_experiment
-  model.run_finetuning(train_tfrecord, dev_tfrecord, train_eval_fun)
+  # also passing in the train_set (need to capture year_lp in validation)
+  model.run_finetuning(train_set, dev_set, FLAGS.model_dir, train_tfrecord, dev_tfrecord, train_eval_fun)
 
   # don't delete for caching purposes
   # Deletes temp files.

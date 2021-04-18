@@ -123,8 +123,19 @@ def serialize_example(reference,
     f = tf.train.Feature(float_list=tf.train.FloatList(value=list(values)))
     return f
 
+  # adding custom hash function - we need deterministic hashing.
+  def hash_md5_16(value):
+    b = bytes(value, 'utf-8')
+    w = hashlib.md5(b).hexdigest()[:16]
+    val = int(w, 16)
+    #convert to signed integer (to avoid overflow problems)
+    bits = 64
+    if val & (1 << (bits-1)):
+      val -= 1 << bits
+    return val
+
   def _create_str_feature(value):
-    f = tf.train.Feature(int64_list=tf.train.Int64List(value=[hash(value)]))
+    f = tf.train.Feature(int64_list=tf.train.Int64List(value=[hash_md5_16(value)]))
     return f
 
   input_ids, input_mask, segment_ids = encode_example(reference, candidate,
@@ -162,7 +173,7 @@ def encode_batch(references, candidates, tokenizer, max_seq_length):
   """
   encoded_examples = []
   for ref, cand in zip(references, candidates):
-    triplet = encode_example(ref, cand, "", tokenizer, max_seq_length)
+    triplet = encode_example(ref, cand, tokenizer, max_seq_length)
     triplet = triplet[:3]
     example = np.stack(triplet)
     encoded_examples.append(example)
